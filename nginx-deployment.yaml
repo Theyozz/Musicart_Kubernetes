@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: musicart
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-backend
+  template:
+    metadata:
+      labels:
+        app: nginx-backend
+    spec:
+      containers:
+      - name: nginx
+        image: musicart-nginx:local
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
