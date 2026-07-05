@@ -79,6 +79,22 @@ Tout tourne dans le namespace **`musicart`**, isolé du reste de ton playground 
    fichiers retombe sur `index.html`, laissant Angular décider quoi afficher. Voir "Piège : routes
    Angular en 404 ou listing de dossier" dans le `README.md`.
 
+10. **Cloisonné le trafic interne avec des NetworkPolicy** : recréé le cluster avec le CNI Calico
+    (`minikube start --driver=docker --cni=calico`, seul un CNI comme Calico applique réellement
+    ces règles — le CNI par défaut de minikube les ignore), puis ajouté 4 `NetworkPolicy` qui
+    n'autorisent que le trafic strictement nécessaire (`frontend`/`nginx` ← Ingress uniquement,
+    `php` ← `nginx` uniquement, `mysql` ← `php` uniquement). Vérifié qu'un pod qui n'a pas le droit
+    (ex: `frontend` vers `mysql`) se fait bloquer, alors que le chemin utilisateur normal continue
+    de marcher. Voir "NetworkPolicy" dans le `README.md`.
+
+11. **Regroupé tous les manifests dans un chart Helm** (`musicart-chart/`) : les ~15 fichiers YAML
+    séparés (Deployments, Services, Ingress, NetworkPolicy) sont devenus des templates
+    paramétrables via `values.yaml` (images, replicas, host, mots de passe MySQL de dev). Le
+    déploiement se fait maintenant en une commande (`helm install`/`helm upgrade`) au lieu d'une
+    dizaine de `kubectl apply -f`, avec un historique de versions et un rollback possibles. Les
+    secrets sensibles (`jwt-secret`, `php-secret`) restent créés à part, hors du chart, comme
+    avant. Voir "Helm" dans le `README.md`.
+
 ---
 
 ## 3. Démarrer l'application (au quotidien)
@@ -98,6 +114,12 @@ kubectl get pods -n musicart
 
 Les Deployments redémarrent automatiquement leurs pods — pas besoin de ré-appliquer les manifests
 ni de recréer les secrets (ils sont stockés dans le cluster, persistés avec lui).
+
+⚠️ Le cluster utilise maintenant le CNI **Calico** (nécessaire pour que les `NetworkPolicy`
+fonctionnent réellement). Ça ne change rien pour un simple `minikube stop` / `minikube start` —
+mais si un jour tu fais `minikube delete`, il faudra repartir avec
+`minikube start --driver=docker --cni=calico` (sans quoi les policies resteront présentes mais
+n'auront plus aucun effet), puis tout redéployer (images, secrets, migrations, dump SQL).
 
 ### Accéder à l'application dans le navigateur
 
@@ -157,6 +179,10 @@ kubectl rollout restart deployment/php -n musicart
 
 # Voir tout ce qui tourne dans le namespace d'un coup
 kubectl get all -n musicart
+
+# Historique des déploiements Helm, et rollback si besoin
+helm history musicart -n musicart
+helm rollback musicart <revision> -n musicart
 ```
 
 ### Après une modification du code (Symfony ou Angular)

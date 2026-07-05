@@ -1,12 +1,13 @@
 # Musicart sur Kubernetes (minikube)
 
-Déploiement du projet perso Musicart (Symfony + Angular + MySQL) pour mettre en pratique Ingress.
+Déploiement du projet perso Musicart (Symfony + Angular + MySQL) pour mettre en pratique Ingress,
+NetworkPolicy et Helm.
 
 ## Secrets (non versionnés)
 
 `php-secret` et `jwt-secret` contiennent de vraies valeurs sensibles (clé privée JWT, mot de passe DB)
-et ne sont **volontairement pas** définis en YAML dans ce repo. Ils sont créés directement dans le
-cluster via des commandes imperative `kubectl create secret` :
+et ne sont **volontairement pas** définis en YAML dans ce repo, ni dans le chart Helm. Ils sont créés
+directement dans le cluster via des commandes imperative `kubectl create secret` :
 
 ```bash
 kubectl create secret generic jwt-secret -n musicart \
@@ -18,9 +19,26 @@ kubectl create secret generic php-secret -n musicart \
   --from-literal=JWT_PASSPHRASE="<valeur de JWT_PASSPHRASE dans Musicart_Symfony/.env>"
 ```
 
-`mysql-secret.yaml` ne contient que des mots de passe de dev bidons, sans conséquence — celui-là reste versionné.
+`mysql-secret` ne contient que des mots de passe de dev bidons, sans conséquence — celui-là est
+généré par le chart Helm (valeurs par défaut dans `musicart-chart/values.yaml`), pas de commande à
+part.
 
-## Déploiement
+## Helm — pourquoi
+
+Au départ, chaque ressource (Deployment, Service, Ingress, NetworkPolicy...) était un fichier YAML
+séparé, appliqué un par un avec `kubectl apply -f`. **Helm** est le gestionnaire de paquets de
+Kubernetes : il regroupe tous ces fichiers dans un **chart** (un dossier avec des templates YAML +
+un `values.yaml` qui centralise ce qui varie — tag d'image, nombre de replicas, host de l'ingress).
+Une seule commande (`helm install`/`helm upgrade`) déploie ou met à jour tout d'un coup, et Helm
+garde un historique des versions déployées (`helm rollback`), comme `kubectl rollout undo` mais
+pour l'ensemble de l'appli plutôt qu'un seul Deployment.
+
+## Déploiement (Helm)
+
+Tous les manifests (sauf `namespace.yaml` et les deux secrets sensibles ci-dessus) sont regroupés
+dans le chart [`musicart-chart/`](./musicart-chart/) : un `Chart.yaml`, un `values.yaml` (images,
+replicas, host de l'ingress, mots de passe MySQL de dev...) et les templates YAML dans
+`musicart-chart/templates/`.
 
 ```bash
 minikube addons enable ingress
@@ -46,14 +64,25 @@ Puis :
 ```bash
 kubectl apply -f namespace.yaml
 # (créer jwt-secret et php-secret, voir ci-dessus)
-kubectl apply -f mysql-secret.yaml -f mysql-pvc.yaml -f mysql-deployment.yaml -f mysql-service.yaml
-kubectl apply -f php-deployment.yaml -f php-service.yaml
-kubectl apply -f nginx-deployment.yaml -f nginx-service.yaml
-kubectl apply -f frontend-deployment.yaml -f frontend-service.yaml
-kubectl apply -f ingress.yaml
+
+helm install musicart ./musicart-chart -n musicart
 
 # migrations Symfony (une fois les pods up)
 kubectl exec -n musicart deploy/php -- php bin/console doctrine:migrations:migrate --no-interaction
+```
+
+Pour appliquer un changement (ex: modifier `values.yaml`, ou après un `minikube image load` d'une
+nouvelle image) :
+
+```bash
+helm upgrade musicart ./musicart-chart -n musicart
+
+# Voir l'historique des versions déployées, et revenir en arrière si besoin
+helm history musicart -n musicart
+helm rollback musicart 1 -n musicart
+
+# Prévisualiser le YAML généré sans rien appliquer (utile pour vérifier un template)
+helm template musicart ./musicart-chart
 ```
 
 ### Accès depuis le navigateur
@@ -164,6 +193,60 @@ RewriteCond %{REQUEST_FILENAME}/index.html -f
 RewriteRule ^ - [L]
 
 RewriteRule ^ /index.html [L]
+```
+
+## NetworkPolicy — cloisonner le trafic interne
+
+Par défaut, tous les pods du cluster peuvent se parler entre eux, même entre namespaces. Une
+**NetworkPolicy** cible des pods via un `podSelector` et bascule leur trafic (ingress et/ou egress)
+en "deny by default" : dès qu'une policy sélectionne un pod pour une direction donnée, seul ce qui
+est explicitement autorisé passe.
+
+⚠️ **Prérequis** : le CNI par défaut de minikube (`kindnet`) n'applique **pas** ces règles (il assure
+juste la connectivité, sans moteur de filtrage). Il faut un CNI qui les supporte, ex. Calico —
+ce qui nécessite de recréer le cluster (`minikube delete` puis `minikube start --driver=docker
+--cni=calico`), donc de tout redéployer (images, secrets, migrations, dump SQL).
+
+### Policies mises en place
+
+Une policy par composant, qui n'autorise que le flux réellement nécessaire — templatisées dans
+`musicart-chart/templates/`, activées par défaut (`networkPolicy.enabled: true` dans
+`values.yaml`) :
+
+- `networkpolicy-mysql.yaml` : `mysql` n'accepte du trafic entrant
+  que depuis les pods `app=php`, sur le port 3306.
+- `networkpolicy-php.yaml` : `php` n'accepte que depuis les pods
+  `app=nginx-backend`, sur le port 9000 (FastCGI).
+- `networkpolicy-nginx.yaml` : `nginx-backend` n'accepte que depuis
+  le namespace `ingress-nginx` (le contrôleur d'Ingress), sur le port 80.
+- `networkpolicy-frontend.yaml` : même chose pour `frontend`.
+
+Résultat : `mysql` et `php` ne sont plus joignables que depuis leur "voisin légitime" — même un
+autre pod du même namespace (ex: `frontend`) ne peut plus les atteindre directement — alors que le
+chemin utilisateur normal (Ingress → frontend / nginx → php → mysql) continue de fonctionner
+normalement.
+
+Pour désactiver temporairement (ex: debug) : `helm upgrade musicart ./musicart-chart -n musicart
+--set networkPolicy.enabled=false`.
+
+```bash
+kubectl get networkpolicy -n musicart
+```
+
+### Vérifier l'enforcement
+
+```bash
+# Bloqué : frontend n'a plus le droit de parler à mysql directement
+kubectl exec -n musicart deploy/frontend -- nc -zv -w 3 mysql 3306
+# → "Operation timed out"
+
+# Toujours autorisé : php -> mysql
+kubectl exec -n musicart deploy/php -- nc -zv -w 3 mysql 3306
+# → "mysql (...:3306) open"
+
+# Toujours autorisé : l'app complète via l'Ingress
+kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 18080:80 &
+curl -H "Host: musicart.local" http://localhost:18080/api/n_f_t_collections
 ```
 
 ### Piège : PVC recréée = même dossier disque

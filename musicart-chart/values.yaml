@@ -1,0 +1,28 @@
+images:
+  php: musicart-php:local
+  nginx: musicart-nginx:local
+  frontend: musicart-frontend:local
+
+replicaCount:
+  mysql: 1
+  php: 1
+  nginx: 1
+  frontend: 1
+
+ingress:
+  className: nginx
+  host: musicart.local
+
+mysql:
+  storage: 1Gi
+  # Mots de passe de dev bidons, sans conséquence : safe à versionner.
+  rootPassword: root-dev-password
+  password: musicart-dev-password
+
+php:
+  appEnv: dev
+  corsAllowOrigin: '^https?://(localhost|127\.0\.0\.1|musicart\.local)(:[0-9]+)?$'
+
+networkPolicy:
+  enabled: true
+  ingressNamespace: ingress-nginx

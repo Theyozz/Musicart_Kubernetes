@@ -2,9 +2,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: php
-  namespace: musicart
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount.php }}
   selector:
     matchLabels:
       app: php
@@ -15,15 +14,15 @@ spec:
     spec:
       containers:
       - name: php
-        image: musicart-php:local
+        image: {{ .Values.images.php }}
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 9000
         env:
         - name: APP_ENV
-          value: "dev"
+          value: {{ .Values.php.appEnv | quote }}
         - name: CORS_ALLOW_ORIGIN
-          value: '^https?://(localhost|127\.0\.0\.1|musicart\.local)(:[0-9]+)?$'
+          value: {{ .Values.php.corsAllowOrigin | quote }}
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:

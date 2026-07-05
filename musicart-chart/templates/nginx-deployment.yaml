@@ -1,21 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: frontend
-  namespace: musicart
+  name: nginx
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount.nginx }}
   selector:
     matchLabels:
-      app: frontend
+      app: nginx-backend
   template:
     metadata:
       labels:
-        app: frontend
+        app: nginx-backend
     spec:
       containers:
-      - name: frontend
-        image: musicart-frontend:local
+      - name: nginx
+        image: {{ .Values.images.nginx }}
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80

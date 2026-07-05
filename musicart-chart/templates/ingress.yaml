@@ -2,11 +2,10 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: musicart
-  namespace: musicart
 spec:
-  ingressClassName: nginx
+  ingressClassName: {{ .Values.ingress.className }}
   rules:
-  - host: musicart.local
+  - host: {{ .Values.ingress.host }}
     http:
       paths:
       - path: /api
